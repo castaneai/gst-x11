@@ -1,12 +1,13 @@
-package gst_x11
+package main
 
 import (
 	"fmt"
 	"github.com/BurntSushi/xgb"
 	"github.com/notedit/gst"
-	"github.com/stretchr/testify/assert"
 	"image"
 	"image/png"
+	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -88,20 +89,10 @@ func startPipeline(t *testing.T, pipelineStr string) *gst.Pipeline {
 }
 
 func pullRGBAImage(t *testing.T, e *gst.Element, width, height int) *image.RGBA {
-	var sample *gst.Sample
-	for {
-		s, err := e.PullSample()
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, b := range s.Data {
-			if b != 0 {
-				sample = s
-				goto OK
-			}
-		}
+	sample, err := e.PullSample()
+	if err != nil {
+		t.Fatal(err)
 	}
-OK:
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	img.Pix = sample.Data
 	return img
@@ -118,33 +109,34 @@ func savePNG(t *testing.T, filename string, img image.Image) {
 }
 
 func TestXImageSrc(t *testing.T) {
-	display := ":99"
-	width, height := 50, 50
-	xvfb := NewXvfb(t, display, width, height, 24, 5*time.Second)
-	xvfb.StartCommand(t, "xeyes", "-geometry", fmt.Sprintf("%dx%d", width, height))
+	display := os.Getenv("DISPLAY")
+	width, height := 100, 100
 
-	{
-		ps1 := fmt.Sprintf(`ximagesrc name=src display-name=%s show-pointer=0 use-damage=0
-! videoconvert
-! video/x-raw,format=RGBA
-! appsink name=dst`, display)
-
-		p1 := startPipeline(t, ps1)
-		dst1 := p1.GetByName("dst")
-		assert.NotNil(t, dst1)
-		img1 := pullRGBAImage(t, dst1, width, height)
-		savePNG(t, "image1.png", img1)
+	cmd := exec.Command("wine", "notepad")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		log.Fatal(err)
 	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	time.Sleep(10 * time.Second)
 
-	{
-		ps2 := fmt.Sprintf(`ximagesrc name=src display-name=%s show-pointer=0 use-damage=0 endx=29 endy=29
+	ps1 := fmt.Sprintf(`ximagesrc display-name=%s use-damage=0 endx=%d endy=%d
 ! videoconvert
-! video/x-raw,format=RGBA
-! appsink name=dst`, display)
-		p2 := startPipeline(t, ps2)
-		dst2 := p2.GetByName("dst")
-		assert.NotNil(t, dst2)
-		img2 := pullRGBAImage(t, dst2, 30, 30)
-		savePNG(t, "image2.png", img2)
+! pngenc
+! appsink name=dst drop=1`, display, width-1, height-1)
+	log.Printf("%s", ps1)
+
+	p1, err := gst.ParseLaunch(ps1)
+	if err != nil {
+		log.Fatal(err)
 	}
+	dst1 := p1.GetByName("dst")
+	p1.SetState(gst.StatePlaying)
+
+	sample, err := dst1.PullSample()
+	if err != nil {
+		log.Fatal(err)
+	}
+	ioutil.WriteFile("png.png", sample.Data, 0775)
 }
